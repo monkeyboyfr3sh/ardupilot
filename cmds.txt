@@ -1,0 +1,3 @@
+sim_vehicle.py -v ArduCopter -f airsim-copter --console --map -A "--sim-port-in=9003 --sim-port-out=9002"
+./build/linux/examples/UART_test -M quad
+./waf build --target examples/UART_test
