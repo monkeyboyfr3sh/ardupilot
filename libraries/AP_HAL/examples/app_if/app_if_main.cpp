@@ -26,7 +26,6 @@ static void setup_uart(AP_HAL::UARTDriver *uart, const char *name)
     uart->begin(57600);
 }
 
-Companion_IF my_companion;
 void setup(void)
 {
     hal.scheduler->delay(1000); //Ensure that the uartA can be initialized
@@ -37,13 +36,13 @@ void setup(void)
     setup_uart(hal.serial(3), "SERIAL3");  // 1st GPS
     setup_uart(hal.serial(4), "SERIAL4");  // 2nd GPS
     setup_uart(hal.serial(5), "SERIAL5");  // python coms
-    hal.serial(5)->printf("Secret message!");
-    my_companion = Companion_IF();
 }
 
 uint8_t buffer[128];
 void loop(void)
 {
+    static Companion_IF my_companion = Companion_IF(hal.serial(5));
+
     // int bytecount = hal.serial(5)->read(&buffer[0],128);
     // if(bytecount>0){
     //     hal.serial(5)->printf("Secret message!");
@@ -52,7 +51,7 @@ void loop(void)
     //     // hal.serial(0)->printf("Received: '%s'\n",buffer);
     //     hal.scheduler->delay(100);
     // }
-    my_companion.custom_loop_action(hal.serial(5));
+    my_companion.custom_loop_action();
 
     hal.scheduler->delay(100);
 }
