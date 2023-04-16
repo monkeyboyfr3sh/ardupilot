@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "AP_CANManager_config.h"
+
 #include <AP_HAL/AP_HAL.h>
 
 #if HAL_MAX_CAN_PROTOCOL_DRIVERS
@@ -27,6 +29,7 @@
 #include <GCS_MAVLink/GCS_config.h>
 #if HAL_GCS_ENABLED
 #include <GCS_MAVLink/GCS_MAVLink.h>
+#include <AP_HAL/utility/RingBuffer.h>
 #endif
 
 class AP_CANManager
@@ -55,7 +58,7 @@ public:
 
     enum Driver_Type : uint8_t {
         Driver_Type_None = 0,
-        Driver_Type_UAVCAN = 1,
+        Driver_Type_DroneCAN = 1,
         // 2 was KDECAN -- do not re-use
         // 3 was ToshibaCAN -- do not re-use
         Driver_Type_PiccoloCAN = 4,
@@ -113,7 +116,7 @@ public:
 
 #if HAL_GCS_ENABLED
     bool handle_can_forward(mavlink_channel_t chan, const mavlink_command_long_t &packet, const mavlink_message_t &msg);
-    void handle_can_frame(const mavlink_message_t &msg) const;
+    void handle_can_frame(const mavlink_message_t &msg);
     void handle_can_filter_modify(const mavlink_message_t &msg);
 #endif
 
@@ -165,7 +168,10 @@ private:
 
     AP_Int8 _loglevel;
     uint8_t _num_drivers;
+#if AP_CAN_SLCAN_ENABLED
     SLCAN::CANIface _slcan_interface;
+#endif
+
     static AP_CANManager *_singleton;
 
     char* _log_buf;
@@ -190,6 +196,15 @@ private:
         uint16_t num_filter_ids;
         uint16_t *filter_ids;
     } can_forward;
+
+    // buffer for MAVCAN frames
+    struct BufferFrame {
+        uint8_t bus;
+        AP_HAL::CANFrame frame;
+    };
+    ObjectBuffer<BufferFrame> *frame_buffer;
+
+    void process_frame_buffer(void);
 #endif // HAL_GCS_ENABLED
 };
 

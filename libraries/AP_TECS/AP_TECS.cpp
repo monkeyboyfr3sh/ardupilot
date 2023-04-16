@@ -116,7 +116,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: LAND_ARSPD
     // @DisplayName: Airspeed during landing approach (m/s)
-    // @Description: When performing an autonomus landing, this value is used as the goal airspeed during approach.  Note that this parameter is not useful if your platform does not have an airspeed sensor (use TECS_LAND_THR instead).  If negative then this value is not used during landing.
+    // @Description: When performing an autonomus landing, this value is used as the goal airspeed during approach.  Max airspeed allowed is Trim Airspeed or ARSPD_FBW_MAX as defined by LAND_OPTIONS bitmask.  Note that this parameter is not useful if your platform does not have an airspeed sensor (use TECS_LAND_THR instead).  If negative then this value is not used during landing.
     // @Range: -1 127
     // @Increment: 1
     // @User: Standard
@@ -264,21 +264,13 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("PTCH_FF_K", 30, AP_TECS, _pitch_ff_k, 0.0),
 
-    // @Param: LAND_PTRIM
-    // @DisplayName: Pitch angle for level flight in landing configuration
-    // @Description: This sets the pitch angle required to fly straight and level with flaps and gear in the landing configuration. It is used to calculate the lower pitch limit applied during landing up until the flare. This can be set to the average value of the AOA.AOA log data taken from a landing approach.
-    // @Range: -10 15
-    // @Units: deg
-    // @Increment: 1
-    // @User: Advanced
-    AP_GROUPINFO("LAND_PTRIM", 31, AP_TECS, _land_pitch_trim, 0),
+    // 31 previously used by TECS_LAND_PTRIM
 
     // @Param: FLARE_HGT
     // @DisplayName: Flare holdoff height
-    // @Description: When height above ground is below this, the sink rate will be held at TECS_LAND_SINK. Use this to perform a hold-of manoeuvre when combined with small values for TECS_LAND_SINK.
-    // @Range: -10 15
-    // @Units: deg
-    // @Increment: 1
+    // @Description: When height above ground is below this, the sink rate will be held at TECS_LAND_SINK. Use this to perform a hold-off manoeuvre when combined with small values for TECS_LAND_SINK.
+    // @Range: 0 15
+    // @Units: m
     // @User: Advanced
     AP_GROUPINFO("FLARE_HGT", 32, AP_TECS, _flare_holdoff_hgt, 1.0f),
 
@@ -336,6 +328,7 @@ void AP_TECS::update_50hz(void)
         _height_filter.dd_height = 0.0f;
         DT = 0.02f; // when first starting TECS, use most likely time constant
         _vdot_filter.reset();
+        _takeoff_start_ms = 0;
     }
     _update_50hz_last_usec = now;
 
@@ -436,9 +429,13 @@ void AP_TECS::_update_speed(float DT)
         _EAS = constrain_float(0.01f * (float)aparm.airspeed_cruise_cm.get(), (float)aparm.airspeed_min.get(), (float)aparm.airspeed_max.get());
     }
 
+    // limit the airspeed to a minimum of 3 m/s
+    const float min_airspeed = 3.0;
+
     // Reset states of time since last update is too large
     if (_flags.reset) {
         _TAS_state = (_EAS * EAS2TAS);
+        _TAS_state = MAX(_TAS_state, min_airspeed);
         _integDTAS_state = 0.0f;
         return;
     }
@@ -455,8 +452,7 @@ void AP_TECS::_update_speed(float DT)
     _integDTAS_state = _integDTAS_state + integDTAS_input * DT;
     float TAS_input = _integDTAS_state + _vel_dot + aspdErr * _spdCompFiltOmega * 1.4142f;
     _TAS_state = _TAS_state + TAS_input * DT;
-    // limit the airspeed to a minimum of 3 m/s
-    _TAS_state = MAX(_TAS_state, 3.0f);
+    _TAS_state = MAX(_TAS_state, min_airspeed);
 
 }
 
@@ -580,11 +576,12 @@ void AP_TECS::_update_height_demand(void)
         _hgt_dem_rate_ltd = _height;
         _hgt_dem_in_prev  = _height;
 
-        if (_flare_counter == 0) {
+        if (!_flare_initialised) {
             _flare_hgt_dem_adj = _hgt_dem;
             _flare_hgt_dem_ideal = _hgt_afe;
             _hgt_at_start_of_flare = _hgt_afe;
             _hgt_rate_at_flare_entry = _climb_rate;
+            _flare_initialised = true;
         }
 
         // adjust the flare sink rate to increase/decrease as your travel further beyond the land wp
@@ -598,8 +595,6 @@ void AP_TECS::_update_height_demand(void)
             p = 1.0f;
         }
         _hgt_rate_dem = _hgt_rate_at_flare_entry * (1.0f - p) - land_sink_rate_adj * p;
-
-        _flare_counter++;
 
         _flare_hgt_dem_ideal += _DT * _hgt_rate_dem; // the ideal height profile to follow
         _flare_hgt_dem_adj   += _DT * _hgt_rate_dem; // the demanded height profile that includes the pre-flare height tracking offset
@@ -867,6 +862,18 @@ void AP_TECS::_update_throttle_without_airspeed(int16_t throttle_nudge)
         _throttle_dem = nomThr;
     }
 
+    if (_flight_stage == AP_FixedWing::FlightStage::TAKEOFF) {
+        const uint32_t now = AP_HAL::millis();
+        if (_takeoff_start_ms == 0) {
+            _takeoff_start_ms = now;
+        }
+        const uint32_t dt = now - _takeoff_start_ms;
+        if (dt*0.001 < aparm.takeoff_throttle_max_t) {
+            _throttle_dem = _THRmaxf;
+        }
+    } else {
+        _takeoff_start_ms = 0;
+    }
     if (_flags.is_gliding) {
         _throttle_dem = 0.0f;
         return;
@@ -1080,6 +1087,7 @@ void AP_TECS::_initialise_states(int32_t ptchMinCO_cd, float hgt_afe)
         _DT                   = 0.02f; // when first starting TECS, use the most likely time constant
         _lag_comp_hgt_offset  = 0.0f;
         _post_TO_hgt_offset   = 0.0f;
+        _takeoff_start_ms = 0;
 
         _flags.underspeed            = false;
         _flags.badDescent            = false;
@@ -1220,7 +1228,7 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
     if (_landing.is_flaring()) {
         // smoothly move the min pitch to the required minimum at touchdown
         float p; // 0 at start of flare, 1 at finish
-        if (_flare_counter == 0) {
+        if (!_flare_initialised) {
             p = 0.0f;
         } else if (_hgt_at_start_of_flare > _flare_holdoff_hgt) {
             p = constrain_float((_hgt_at_start_of_flare - _hgt_afe) / _hgt_at_start_of_flare, 0.0f, 1.0f);
@@ -1243,6 +1251,9 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
     } else if (_landing.is_on_approach()) {
         _PITCHminf = MAX(_PITCHminf, 0.01f * aparm.pitch_limit_min_cd);
         _pitch_min_at_flare_entry = _PITCHminf;
+        _flare_initialised = false;
+    } else {
+        _flare_initialised = false;
     }
 
     if (_landing.is_on_approach()) {
@@ -1258,13 +1269,6 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
         _PITCHminf = MIN(_PITCHminf, _land_pitch_min+delta_per_loop);
         _land_pitch_min = MAX(_land_pitch_min, _PITCHminf);
         _PITCHminf = MAX(_land_pitch_min, _PITCHminf);
-    }
-
-    if (_landing.is_flaring()) {
-        // ensure we don't violate the limits for flare pitch
-        if (_land_pitch_max != 0) {
-            _PITCHmaxf = MIN(_land_pitch_max, _PITCHmaxf);
-        }
     }
 
     if (flight_stage == AP_FixedWing::FlightStage::TAKEOFF || flight_stage == AP_FixedWing::FlightStage::ABORT_LANDING) {

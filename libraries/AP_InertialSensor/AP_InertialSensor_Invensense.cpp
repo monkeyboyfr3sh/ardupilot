@@ -453,20 +453,18 @@ bool AP_InertialSensor_Invensense::update() /* front end */
         // check if we have reported in the last 1 seconds or
         // fast_reset_count changed
 #if HAL_GCS_ENABLED && BOARD_FLASH_SIZE > 1024
-        if (AP_HAL::millis() - last_fast_reset_count_report_ms > 1000) {
-            last_fast_reset_count_report_ms = AP_HAL::millis();
-            char param_name[sizeof("IMUx_RST")];
-            if (_gyro_instance <= 9) {
-                snprintf(param_name, sizeof(param_name), "IMU%u_RST", _gyro_instance);
-            } else {
-                snprintf(param_name, sizeof(param_name), "IMUx_RST");
-            }
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_fast_reset_count_report_ms > 5000U) {
+            last_fast_reset_count_report_ms = now;
+            char param_name[sizeof("IMUxx_RST")];
+            snprintf(param_name, sizeof(param_name), "IMU%u_RST", MIN(_gyro_instance,9));
             gcs().send_named_float(param_name, fast_reset_count);
         }
 #endif
 #if HAL_LOGGING_ENABLED
         if (last_fast_reset_count != fast_reset_count) {
             AP::logger().Write_MessageF("IMU%u fast fifo reset %u", _gyro_instance, fast_reset_count);
+            last_fast_reset_count = fast_reset_count;
         }
 #endif
     }
@@ -896,7 +894,7 @@ void AP_InertialSensor_Invensense::_set_filter_register(void)
             _gyro_backend_rate_hz *= fast_sampling_rate;
 
             // calculate rate we will be giving accel samples to the backend
-            if (_mpu_type >= Invensense_MPU9250) {
+            if (_mpu_type >= Invensense_MPU6500) {
                 _accel_fifo_downsample_rate = MAX(4 / fast_sampling_rate, 1);
                 _accel_backend_rate_hz *= MIN(fast_sampling_rate, 4);
             } else {

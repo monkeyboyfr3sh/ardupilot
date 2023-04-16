@@ -23,6 +23,7 @@
 #include "Plane.h"
 
 #define SCHED_TASK(func, rate_hz, max_time_micros, priority) SCHED_TASK_CLASS(Plane, &plane, func, rate_hz, max_time_micros, priority)
+#define FAST_TASK(func) FAST_TASK_CLASS(Plane, &plane, func)
 
 
 /*
@@ -49,16 +50,18 @@ SCHED_TASK_CLASS arguments:
  - expected time (in MicroSeconds) that the method should take to run
  - priority (0 through 255, lower number meaning higher priority)
 
+FAST_TASK entries are run on every loop even if that means the loop
+overruns its allotted time
  */
 const AP_Scheduler::Task Plane::scheduler_tasks[] = {
                            // Units:   Hz      us
-    SCHED_TASK(ahrs_update,           400,    400,   3),
+    FAST_TASK(ahrs_update),
+    FAST_TASK(update_control_mode),
+    FAST_TASK(stabilize),
+    FAST_TASK(set_servos),
     SCHED_TASK(read_radio,             50,    100,   6),
     SCHED_TASK(check_short_failsafe,   50,    100,   9),
     SCHED_TASK(update_speed_height,    50,    200,  12),
-    SCHED_TASK(update_control_mode,   400,    100,  15),
-    SCHED_TASK(stabilize,             400,    100,  18),
-    SCHED_TASK(set_servos,            400,    100,  21),
     SCHED_TASK(update_throttle_hover, 100,     90,  24),
     SCHED_TASK(read_control_switch,     7,    100,  27),
     SCHED_TASK(update_GPS_50Hz,        50,    300,  30),
@@ -68,7 +71,7 @@ const AP_Scheduler::Task Plane::scheduler_tasks[] = {
     SCHED_TASK(calc_airspeed_errors,   10,    100,  42),
     SCHED_TASK(update_alt,             10,    200,  45),
     SCHED_TASK(adjust_altitude_target, 10,    200,  48),
-#if ADVANCED_FAILSAFE == ENABLED
+#if AP_ADVANCEDFAILSAFE_ENABLED
     SCHED_TASK(afs_fs_check,           10,    100,  51),
 #endif
     SCHED_TASK(ekf_check,              10,     75,  54),
@@ -130,7 +133,7 @@ const AP_Scheduler::Task Plane::scheduler_tasks[] = {
 #if AP_GRIPPER_ENABLED
     SCHED_TASK_CLASS(AP_Gripper, &plane.g2.gripper, update, 10, 75, 156),
 #endif
-#if LANDING_GEAR_ENABLED == ENABLED
+#if AP_LANDINGGEAR_ENABLED
     SCHED_TASK(landing_gear_update, 5, 50, 159),
 #endif
 };
@@ -274,7 +277,7 @@ void Plane::update_logging25(void)
 /*
   check for AFS failsafe check
  */
-#if ADVANCED_FAILSAFE == ENABLED
+#if AP_ADVANCEDFAILSAFE_ENABLED
 void Plane::afs_fs_check(void)
 {
     afs.check(failsafe.AFS_last_valid_rc_ms);
@@ -399,10 +402,7 @@ void Plane::update_GPS_50Hz(void)
 {
     gps.update();
 
-    // get position from AHRS
-    have_position = ahrs.get_location(current_loc);
-    ahrs.get_relative_position_D_home(relative_altitude);
-    relative_altitude *= -1.0f;
+    update_current_loc();
 }
 
 /*
@@ -649,6 +649,56 @@ void Plane::disarm_if_autoland_complete()
     }
 }
 
+bool Plane::trigger_land_abort(const float climb_to_alt_m)
+{
+    if (plane.control_mode != &plane.mode_auto) {
+        return false;
+    }
+#if HAL_QUADPLANE_ENABLED
+    if (plane.quadplane.in_vtol_auto()) {
+        return quadplane.abort_landing();
+    }
+#endif
+
+    uint16_t mission_id = plane.mission.get_current_nav_cmd().id;
+    bool is_in_landing = (plane.flight_stage == AP_FixedWing::FlightStage::LAND) ||
+        plane.is_land_command(mission_id);
+    if (is_in_landing) {
+        // fly a user planned abort pattern if available
+        if (plane.mission.jump_to_abort_landing_sequence()) {
+            return true;
+        }
+
+        // only fly a fixed wing abort if we aren't doing quadplane stuff, or potentially
+        // shooting a quadplane approach
+#if HAL_QUADPLANE_ENABLED
+        const bool attempt_go_around =
+            (!plane.quadplane.available()) ||
+            ((!plane.quadplane.in_vtol_auto()) &&
+                (!plane.quadplane.landing_with_fixed_wing_spiral_approach()));
+#else
+        const bool attempt_go_around = true;
+#endif
+        if (attempt_go_around) {
+            // Initiate an aborted landing. This will trigger a pitch-up and
+            // climb-out to a safe altitude holding heading then one of the
+            // following actions will occur, check for in this order:
+            // - If MAV_CMD_CONTINUE_AND_CHANGE_ALT is next command in mission,
+            //      increment mission index to execute it
+            // - else if DO_LAND_START is available, jump to it
+            // - else decrement the mission index to repeat the landing approach
+
+            if (!is_zero(climb_to_alt_m)) {
+                plane.auto_state.takeoff_altitude_rel_cm = climb_to_alt_m * 100;
+            }
+            if (plane.landing.request_go_around()) {
+                plane.auto_state.next_wp_crosstrack = false;
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 
 /*
@@ -771,12 +821,7 @@ bool Plane::get_target_location(Location& target_loc)
  */
 bool Plane::update_target_location(const Location &old_loc, const Location &new_loc)
 {
-    if (!old_loc.same_latlon_as(next_WP_loc)) {
-        return false;
-    }
-    ftype alt_diff;
-    if (!old_loc.get_alt_distance(next_WP_loc, alt_diff) ||
-        !is_zero(alt_diff)) {
+    if (!old_loc.same_loc_as(next_WP_loc)) {
         return false;
     }
     next_WP_loc = new_loc;
@@ -792,6 +837,19 @@ bool Plane::set_velocity_match(const Vector2f &velocity)
     if (quadplane.in_vtol_mode() || quadplane.in_vtol_land_sequence()) {
         quadplane.poscontrol.velocity_match = velocity;
         quadplane.poscontrol.last_velocity_match_ms = AP_HAL::millis();
+        return true;
+    }
+#endif
+    return false;
+}
+
+// allow for override of land descent rate
+bool Plane::set_land_descent_rate(float descent_rate)
+{
+#if HAL_QUADPLANE_ENABLED
+    if (quadplane.in_vtol_land_descent()) {
+        quadplane.poscontrol.override_descent_rate = descent_rate;
+        quadplane.poscontrol.last_override_descent_ms = AP_HAL::millis();
         return true;
     }
 #endif
@@ -815,6 +873,18 @@ void Plane::get_osd_roll_pitch_rad(float &roll, float &pitch) const
     if (!(g2.flight_options & FlightOptions::OSD_REMOVE_TRIM_PITCH_CD)) {  // correct for TRIM_PITCH_CD
         pitch -= g.pitch_trim_cd * 0.01 * DEG_TO_RAD;
     }
+}
+
+/*
+  update current_loc Location
+ */
+void Plane::update_current_loc(void)
+{
+    have_position = plane.ahrs.get_location(plane.current_loc);
+
+    // re-calculate relative altitude
+    ahrs.get_relative_position_D_home(plane.relative_altitude);
+    relative_altitude *= -1.0f;
 }
 
 AP_HAL_MAIN_CALLBACKS(&plane);

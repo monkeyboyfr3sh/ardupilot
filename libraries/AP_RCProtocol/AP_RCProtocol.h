@@ -24,14 +24,6 @@
 #define MAX_RCIN_CHANNELS 18
 #define MIN_RCIN_CHANNELS  5
 
-#ifndef AP_RCPROTOCOL_FASTSBUS_ENABLED
-  #ifdef IOMCU_FW
-    #define AP_RCPROTOCOL_FASTSBUS_ENABLED 0
-  #else
-    #define AP_RCPROTOCOL_FASTSBUS_ENABLED 1
-  #endif
-#endif
-
 class AP_RCProtocol_Backend;
 
 class AP_RCProtocol {
@@ -47,7 +39,9 @@ public:
         SBUS_NI    =  3,
         DSM        =  4,
         SUMD       =  5,
+#if AP_RCPROTOCOL_SRXL_ENABLED
         SRXL       =  6,
+#endif
         SRXL2      =  7,
         CRSF       =  8,
         ST24       =  9,
@@ -101,12 +95,14 @@ public:
 #if AP_RCPROTOCOL_FPORT2_ENABLED
         case FPORT2:
 #endif
+        case CRSF:
             return true;
         case IBUS:
         case SUMD:
+#if AP_RCPROTOCOL_SRXL_ENABLED
         case SRXL:
+#endif
         case SRXL2:
-        case CRSF:
         case ST24:
         case NONE:
             return false;

@@ -16,6 +16,8 @@
 #include "AP_Torqeedo/AP_Torqeedo.h"
 #include <AP_WindVane/AP_WindVane.h>
 
+#define AP_PARAM_VEHICLE_NAME rover
+
 // Global parameter class.
 //
 class Parameters {
@@ -222,6 +224,7 @@ public:
         k_param_notify,
         k_param_button,
         k_param_osd,
+        k_param_optflow,
 
         k_param_logger = 253,  // Logging Group
 
@@ -309,7 +312,9 @@ public:
     AP_AdvancedFailsafe_Rover afs;
 #endif
 
+#if AP_BEACON_ENABLED
     AP_Beacon beacon;
+#endif
 
     // Motor library
     AP_MotorsUGV motors;
@@ -430,6 +435,9 @@ public:
 
     // manual mode steering expo
     AP_Float manual_steering_expo;
+
+    // FS GCS timeout trigger time
+    AP_Float fs_gcs_timeout;
 };
 
 extern const AP_Param::Info var_info[];
