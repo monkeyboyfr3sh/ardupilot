@@ -1,3 +1,6 @@
 sim_vehicle.py -v ArduCopter -f airsim-copter --console --map -A "--sim-port-in=9003 --sim-port-out=9002"
-./build/linux/examples/UART_test -M quad -F udp:192.168.0.160:12345
 ./waf build --target examples/UART_test
+./build/linux/examples/UART_test -M quad -F udp:192.168.0.160:12345
+
+./waf build --target examples/app_if
+./build/linux/examples/app_if -M quad -F udp:192.168.0.160:12345

@@ -23,7 +23,7 @@ static void setup_uart(AP_HAL::UARTDriver *uart, const char *name)
         // that UART doesn't exist on this platform
         return;
     }
-    uart->begin(57600);
+    uart->begin(115200);
 }
 
 void setup(void)
@@ -38,22 +38,55 @@ void setup(void)
     setup_uart(hal.serial(5), "SERIAL5");  // python coms
 }
 
-uint8_t buffer[128];
+int print_buffer(const char* buff, size_t max_len) {
+    const char * string_start = &(buff[1]);
+    size_t len = strnlen(string_start, max_len); // Check length up to 100 characters
+    hal.serial(0)->printf("%s", string_start); // Use precision to print up to len characters
+    return len;
+}
+
 void loop(void)
 {
-    static Companion_IF my_companion = Companion_IF(hal.serial(5));
+    const uint16_t connect_time = 100;
+    static Companion_IF companion_if = Companion_IF(hal.serial(5),connect_time);
+    static uint8_t rx_buff[128];
+    static int rx_count = 0;
 
-    // int bytecount = hal.serial(5)->read(&buffer[0],128);
-    // if(bytecount>0){
-    //     hal.serial(5)->printf("Secret message!");
-    
-    //     buffer[bytecount] = 0;
-    //     // hal.serial(0)->printf("Received: '%s'\n",buffer);
-    //     hal.scheduler->delay(100);
-    // }
-    my_companion.custom_loop_action();
+    // Need to connect first
+    if ( !companion_if.connected ){
+        hal.serial(0)->printf("error connecting!!\r\n");
+        companion_if.connect_to_companion(connect_time);
+    } 
+    // Connected and ready to roll    
+    else {
+        CompanionCommandType command = companion_if.poll_for_command(rx_buff,sizeof(rx_buff));
+        if (command !=  CompanionCommandType::no_cmd){
+            // Update rx count
+            rx_count++;
+            companion_if._companion_uart->printf("AP rx_count %d... ", rx_count);
+            hal.serial(0)->printf("Got command: ");
 
-    hal.scheduler->delay(100);
+            // Handle command return
+            switch (command)
+            {
+            case CompanionCommandType::string_cmd:{
+                hal.serial(0)->printf("[STR] ");
+                // Print the stirng
+                print_buffer( (const char*)rx_buff, sizeof(rx_buff));
+                hal.serial(0)->printf("\r\n");
+                break;
+            }
+            case CompanionCommandType::ack_cmd:{
+                // Print an ack
+                hal.serial(0)->printf("[ACK]\r\n");
+                break;
+            }
+            
+            default:
+                break;
+            }
+        }
+    }
 }
 
 AP_HAL_MAIN();
