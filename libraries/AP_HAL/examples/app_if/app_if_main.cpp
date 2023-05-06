@@ -50,7 +50,8 @@ void loop(void)
     const uint16_t connect_time = 100;
     static Companion_IF companion_if = Companion_IF(hal.serial(5),connect_time);
     static uint8_t rx_buff[128];
-    static int rx_count = 0;
+    static int ack_count = 0;
+    static int nack_count = 0;
 
     // Need to connect first
     if ( !companion_if.connected ){
@@ -59,11 +60,10 @@ void loop(void)
     } 
     // Connected and ready to roll    
     else {
+        bool valid_command = true;
         CompanionCommandType command = companion_if.poll_for_command(rx_buff,sizeof(rx_buff));
         if (command !=  CompanionCommandType::no_cmd){
             // Update rx count
-            rx_count++;
-            companion_if._companion_uart->printf("AP rx_count %d... ", rx_count);
             hal.serial(0)->printf("Got command: ");
 
             // Handle command return
@@ -83,8 +83,19 @@ void loop(void)
             }
             
             default:
+                valid_command = false;
+                hal.serial(0)->printf("[NACK]\r\n");
                 break;
             }
+
+            if (valid_command) {
+                ack_count++;
+                companion_if._companion_uart->printf("ACK #%d... ", ack_count);
+            } else {
+                nack_count++;
+                companion_if._companion_uart->printf("NACK #%d... ", nack_count);
+            }
+
         }
     }
 }
